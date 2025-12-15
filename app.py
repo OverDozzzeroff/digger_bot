@@ -1,16 +1,13 @@
 import random
 import os
-import asyncio # <-- ДОБАВЛЕНО: для асинхронных операций
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, InlineQueryHandler, CommandHandler
 from uuid import uuid4
 from flask import Flask, request, jsonify
 
 # --- НАСТРОЙКИ ---
-# Токен берется из переменной окружения
+# Токен берется из переменной окружения Railway/Render
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН_ЗДЕСЬ_ДЛЯ_ЛОКАЛЬНОГО_ТЕСТА")
-# PORT больше не нужен, его обработает Gunicorn
-# PORT = int(os.environ.get("PORT", 5000)) 
 
 # Главная картинка (URL для превью)
 MAIN_PHOTO = "https://tkrim.ru/images/stati/8weJe2QW.jpg"
@@ -45,9 +42,9 @@ TEXTS = [
 
 # Инициализация Flask и PTB
 app = Application.builder().token(TOKEN).build()
-flask_app = Flask(__name__) # <-- Объект WSGI-приложения для Gunicorn
+flask_app = Flask(__name__) 
 
-# --- ОБРАБОТЧИКИ ---
+# --- ОБРАБОТЧИКИ PTB ---
 
 async def start_command(update: Update, context):
     """Обработчик команды /start."""
@@ -84,6 +81,7 @@ async def inline_handler(update: Update, context):
         await update.inline_query.answer([result], cache_time=0)
         return
     else:
+        # Если пользователь что-то ввел, не показываем ничего или фильтруем
         await update.inline_query.answer([], cache_time=0)
 
 
@@ -92,55 +90,59 @@ app.add_handler(CommandHandler("start", start_command))
 app.add_handler(InlineQueryHandler(inline_handler))
 
 
-# --- ФУНКЦИИ WEBHOCK ---
+# --- ФУНКЦИИ WEBHOCK (ИСПРАВЛЕННЫЕ) ---
 
 @flask_app.route('/')
-def home():
-    """Проверка доступности сервера."""
+async def home(): # <-- ИСПРАВЛЕНИЕ 1: Асинхронный маршрут для установки Webhook
+    """Проверка доступности сервера и установка Webhook."""
+    
+    # Объединяем поиск домена для Render и Railway
+    WEBHOOK_DOMAIN = os.environ.get("RENDER_EXTERNAL_HOSTNAME") or \
+                     os.environ.get("RAILWAY_STATIC_URL") or \
+                     os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    
+    if WEBHOOK_DOMAIN:
+        full_webhook_url = f"https://{WEBHOOK_DOMAIN}/webhook"
+        
+        try:
+            # Проверяем, установлен ли Webhook правильно
+            webhook_info = await app.bot.get_webhook_info()
+            
+            if webhook_info.url != full_webhook_url or webhook_info.last_error_message:
+                print(f"--- ⚙️ Установка Webhook на: {full_webhook_url} ---")
+                
+                # Сбрасываем старый Webhook и ошибки
+                await app.bot.delete_webhook() 
+                
+                # Устанавливаем новый Webhook
+                await app.bot.set_webhook(url=full_webhook_url)
+                print("✅ Webhook успешно установлен.")
+            else:
+                print("Webhook уже установлен и верен.")
+
+        except Exception as e:
+            print(f"❌ Критическая ошибка при установке Webhook: {e}")
+
     return "Digger Level Bot is running with Webhooks!", 200
 
 @flask_app.route('/webhook', methods=['POST'])
-async def webhook():
+async def webhook(): # <-- ИСПРАВЛЕНИЕ 2: Асинхронный маршрут для обработки POST
     """Обработка входящих обновлений от Telegram."""
     if request.method == "POST":
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, app.bot)
+        
+        # Обрабатываем обновление с помощью PTB
         await app.process_update(update)
+        
         return "ok", 200
     return jsonify({}), 405
 
-# --- НАСТРОЙКА WEBHOOK ПРИ ЗАГРУЗКЕ МОДУЛЯ (ИСПРАВЛЕННЫЙ БЛОК) ---
-
-print("--- ⚙️ Настройка Webhook... ---")
-
-# Объединяем поиск домена для Render и Railway
-WEBHOOK_DOMAIN = os.environ.get("RENDER_EXTERNAL_HOSTNAME") or \
-                 os.environ.get("RAILWAY_STATIC_URL") or \
-                 os.environ.get("RAILWAY_PUBLIC_DOMAIN")
-
-if WEBHOOK_DOMAIN:
-    full_webhook_url = f"https://{WEBHOOK_DOMAIN}/webhook"
-    print(f"Установка Webhook на: {full_webhook_url}")
-    
-    try:
-        # *** ИСПРАВЛЕНИЕ: Используем asyncio.run для надежного выполнения асинхронного вызова ***
-        # Сначала сбрасываем, чтобы очистить ошибки (pending_update_count)
-        asyncio.run(app.bot.delete_webhook()) 
-        
-        # Устанавливаем новый Webhook
-        asyncio.run(app.bot.set_webhook(url=full_webhook_url))
-        print("✅ Webhook успешно установлен.")
-        
-    except Exception as e:
-        print(f"❌ Ошибка при установке Webhook: {e}")
-        
-else:
-    print("Переменная среды хостинга не найдена. Webhook не установлен.")
-    
-# --- (Удален run_web_server(), так как Gunicorn напрямую использует flask_app) ---
+# --- ЗАПУСК ---
+# Удален старый код установки Webhook, он теперь в home()
 
 if __name__ == '__main__':
     # Эта часть используется только для локального тестирования
     PORT = int(os.environ.get("PORT", 5000))
-    print("Запуск локального сервера (только для тестирования)...")
+    print("Запуск локального сервера (только для тестирования, используйте Polling для отладки).")
     flask_app.run(debug=True, port=PORT)
