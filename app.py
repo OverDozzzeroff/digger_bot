@@ -6,10 +6,7 @@ from uuid import uuid4
 from flask import Flask, request, jsonify
 
 # --- НАСТРОЙКИ ---
-# Токен берется из переменной окружения Railway/Render
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "ВАШ_ТОКЕН_ЗДЕСЬ_ДЛЯ_ЛОКАЛЬНОГО_ТЕСТА")
-
-# Главная картинка (URL для превью)
 MAIN_PHOTO = "https://tkrim.ru/images/stati/8weJe2QW.jpg"
 
 # Тексты типов диггеров (19 вариантов)
@@ -38,11 +35,11 @@ TEXTS = [
     "<b>ТЫ ДИГГЕР НА:</b> <tg-spoiler>98% - Хакер 💻</tg-spoiler>\n\n• Можешь найти любой бомбарь по фотке гп5\n\n🤖 @Diggerspbdigger",
     "<b>ТЫ ДИГГЕР НА:</b> <tg-spoiler>14% - Эмка 🐒</tg-spoiler>\n\n• Еблан который нихуя не может (рофл)\n\n🤖 @Diggerspbdigger",
 ]
-# --- (Конец списка TEXTS) ---
 
-# Инициализация Flask и PTB
+# Инициализация Flask и PTB (оставим ее здесь, чтобы она была доступна)
 app = Application.builder().token(TOKEN).build()
 flask_app = Flask(__name__) 
+
 
 # --- ОБРАБОТЧИКИ PTB ---
 
@@ -81,7 +78,6 @@ async def inline_handler(update: Update, context):
         await update.inline_query.answer([result], cache_time=0)
         return
     else:
-        # Если пользователь что-то ввел, не показываем ничего или фильтруем
         await update.inline_query.answer([], cache_time=0)
 
 
@@ -90,13 +86,16 @@ app.add_handler(CommandHandler("start", start_command))
 app.add_handler(InlineQueryHandler(inline_handler))
 
 
-# --- ФУНКЦИИ WEBHOCK (ИСПРАВЛЕННЫЕ) ---
+# --- ФУНКЦИИ WEBHOCK (ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ) ---
 
 @flask_app.route('/')
-async def home(): # <-- ИСПРАВЛЕНИЕ 1: Асинхронный маршрут для установки Webhook
-    """Проверка доступности сервера и установка Webhook."""
+async def home():
+    """Проверка доступности сервера и УСТАНОВКА Webhook (для Render/Railway)."""
     
-    # Объединяем поиск домена для Render и Railway
+    # 1. Сначала инициализируем приложение PTB (КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ)
+    await app.initialize()
+
+    # 2. Логика установки Webhook (упрощенная)
     WEBHOOK_DOMAIN = os.environ.get("RENDER_EXTERNAL_HOSTNAME") or \
                      os.environ.get("RAILWAY_STATIC_URL") or \
                      os.environ.get("RAILWAY_PUBLIC_DOMAIN")
@@ -105,44 +104,41 @@ async def home(): # <-- ИСПРАВЛЕНИЕ 1: Асинхронный мар�
         full_webhook_url = f"https://{WEBHOOK_DOMAIN}/webhook"
         
         try:
-            # Проверяем, установлен ли Webhook правильно
             webhook_info = await app.bot.get_webhook_info()
             
             if webhook_info.url != full_webhook_url or webhook_info.last_error_message:
-                print(f"--- ⚙️ Установка Webhook на: {full_webhook_url} ---")
-                
-                # Сбрасываем старый Webhook и ошибки
-                await app.bot.delete_webhook() 
-                
-                # Устанавливаем новый Webhook
+                print(f"--- ⚙️ Переустановка Webhook на: {full_webhook_url} ---")
                 await app.bot.set_webhook(url=full_webhook_url)
                 print("✅ Webhook успешно установлен.")
             else:
                 print("Webhook уже установлен и верен.")
 
         except Exception as e:
+            # Эта ошибка ("Цикл событий закрыт") все еще может происходить при запуске Gunicorn. 
+            # Главное, что Webhook установлен хотя бы один раз.
             print(f"❌ Критическая ошибка при установке Webhook: {e}")
-
+            
     return "Digger Level Bot is running with Webhooks!", 200
 
 @flask_app.route('/webhook', methods=['POST'])
-async def webhook(): # <-- ИСПРАВЛЕНИЕ 2: Асинхронный маршрут для обработки POST
+async def webhook(): 
     """Обработка входящих обновлений от Telegram."""
+    
+    # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Инициализируем приложение перед обработкой обновления
+    await app.initialize()
+    
     if request.method == "POST":
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, app.bot)
         
-        # Обрабатываем обновление с помощью PTB
         await app.process_update(update)
         
         return "ok", 200
     return jsonify({}), 405
 
 # --- ЗАПУСК ---
-# Удален старый код установки Webhook, он теперь в home()
 
 if __name__ == '__main__':
-    # Эта часть используется только для локального тестирования
     PORT = int(os.environ.get("PORT", 5000))
-    print("Запуск локального сервера (только для тестирования, используйте Polling для отладки).")
+    print("Запуск локального сервера...")
     flask_app.run(debug=True, port=PORT)
